@@ -4,6 +4,28 @@
 # Example command line:
 # python locateASEvents.py longest_orfs_per_gene.txt transcriptModels_AtRTDv2_QUASI_19April2016.pkl output_as_event_locations.txt
 
+# longest orf file:
+# - created by getORFs.py
+# - content:
+#   - lines consisting of transcript IDs, ORF start, ORF end
+# - example content:
+#   AT1G01010.1,130,1419
+#   AT1G01020_P1,465,1202
+#   AT1G01030_ID1,775,1851
+
+# exon file:
+# - created by getExondata.py
+# - content after read in:
+#   - dictionary containing as keys transcript IDs and as values lists with a list of exon lengths as the first element and a list of 
+#     intron lengths as the second element
+# - example content:
+#   {'AT1G01010.1': [[283, 281, 120, 390, 153, 461], [82, 209, 100, 78, 112]], 'AT1G01020_P1': [[560, 48, 90, 46, 74, 86, 67, 76, 282], 
+#   [106, 91, 248, 106, 112, 113, 151, 87]], 'AT1G01020_P2': [[560, 48, 90, 46, 74, 86, 294, 282], [106, 91, 248, 106, 112, 113, 87]], 
+#   'AT1G01020_P3': [[560, 229, 46, 74, 86, 67, 76, 282], [106, 248, 106, 112, 113, 151, 87]], 'AT1G01020_P4': [[537, 229, 46, 74, 86, 67, 76, 282], 
+#   [129, 248, 106, 112, 113, 151, 87]], 'AT1G01020_P5': [[537, 48, 90, 46, 74, 86, 67, 76, 282], [129, 91, 248, 106, 112, 113, 151, 87]], 
+#   'AT1G01020_P6': [[537, 48, 90, 86, 294, 282], [129, 91, 586, 113, 87]], 'AT1G01030.1': [[380, 1525], [161]], 'AT1G01030_ID1': [[2066], []], 
+#   'AT1G01030_P2': [[380, 750, 706], [161, 69]]}
+
 import sys, pickle
 
 usage = "Usage: python" + sys.argv[0] + " <path/longest orf file (txt file)>" + " <path/exon file (pkl file)>" + " <path/output file (txt file)>"
@@ -35,7 +57,7 @@ def read_longest_orf_file(orf_file):
 
 
 def get_raw_exon_coordinates(ref_key, transcriptModels):
-# ref_transcript_id: transcript id of reference transcript
+# ref_key: transcript id of reference transcript
 # transcriptModels: dictionary containing transcript IDs as keys and lists of lists of exon and intron lengths as values
 # Returns list of intron containing exon coordinates for handed over reference transcript (exon coordinates starting from 1)
   exon_lengths = transcriptModels[ref_key][0]
@@ -212,21 +234,25 @@ def check_for_mutually_exclusive_exons(raw_exon_coordinates_ref, raw_exon_coordi
 # check whether the current exon of isoform is located in front of the current exon of reference or behind it and 
 # check whether start coordinates of the following exons of reference and isoform coincide
 # if yes,
-# return True, otherwise False
+# return start and end coordinates of skipped exon + end coordinate of previous exon + start coordinate of next exon, otherwise empty tuple
   global log
+  mxe_coordinates = ()
+
   try:
-    if len(raw_exon_coordinates_ref) <= i+1:
-      # no following exon in reference transcript existent, so that following comparison not possible
-      if log: print('Failure in check_for_exon_skipping(): no following exon in reference transcript existent')
-      return exonskip_coordinates
+    if len(raw_exon_coordinates_ref) <= i+1 or len(raw_exon_coordinates_iso) <= i+1 or i == 0:
+      # no following exon in reference transcript or isoform existent, so that following comparison not possible
+      # if i = 0, no previous exon accessible
+      if log: print('Failure in check_for_mutually_exclusive_exons(): no following exon in reference transcript existent')
+      return mxe_coordinates
     if (raw_exon_coordinates_iso[i][1] < raw_exon_coordinates_ref[i][0] or raw_exon_coordinates_iso[i][0] > raw_exon_coordinates_ref[i][1]) and (raw_exon_coordinates_ref[i+1][0] == raw_exon_coordinates_iso[i+1][0]):
       if log: print('Start of raw exon of reference ', i+1, ' = start of raw exon of isoform ', i+1, ' : ', raw_exon_coordinates_ref[i+1][0])
-      return True
+      mxe_coordinates = (raw_exon_coordinates_ref[i][0], raw_exon_coordinates_ref[i][1], raw_exon_coordinates_ref[i-1][1], raw_exon_coordinates_ref[i+1][0])
+      return mxe_coordinates
   except IndexError:
     print('IndexError in check_for_mutually_exclusive_exons()')
   except:
     print('Error in check_for_mutually_exclusive_exons()')
-  return False
+  return mxe_coordinates
 
 
 def detect_as_event(transcriptModels, ref_key, iso_key, ir_list, alta_list, altd_list, er_list, ci_list, unresolved_list, es_list):
@@ -241,7 +267,7 @@ def detect_as_event(transcriptModels, ref_key, iso_key, ir_list, alta_list, altd
 # unresolved_list: list of unresolved AS events, containing tuples of transcript_id + number of affected exon - to be filled here
 # es_list: list of ES events, containing tuples of transcript_id + number of affected exon - to be filled here
 # compare exon boundaries of reference transcript and isoform in parallel; assign first deviation (from 5' site) to an AS event
-# returns tuple containing first deviation coordinate and AS event code (ir = 1, alta = 2, altd = 3, er = 4, ci = 5, es = 6, mux = 7) or 
+# returns tuple containing first deviation coordinate and AS event code (ir = 1, alta = 2, altd = 3, er = 4, ci = 5, es = 6, mxe = 7) or 
 #   tuple (0, 0) for unresolved AS event
   global log
   as_event = ()
@@ -252,6 +278,7 @@ def detect_as_event(transcriptModels, ref_key, iso_key, ir_list, alta_list, altd
   altd_t = ()
   alta_t = ()
   es_t = ()
+  mxe_t = ()
   raw_exon_coordinates_ref = get_raw_exon_coordinates(ref_key, transcriptModels)
   raw_exon_coordinates_iso = get_raw_exon_coordinates(iso_key, transcriptModels)
   if log: print(f"detect_as_event: raw_exon_coordinates_ref = {raw_exon_coordinates_ref}")
@@ -264,8 +291,10 @@ def detect_as_event(transcriptModels, ref_key, iso_key, ir_list, alta_list, altd
         if log: print('Deviation in raw start coordinate of exon ', i, ': ', exon_ref[0], '(reference) != ', raw_exon_coordinates_iso[i][0], ' (isoform)')
         deviating_exon_coordinate = raw_exon_coordinates_iso[i][0]
         # mutually exclusive exon
-        if check_for_mutually_exclusive_exons(raw_exon_coordinates_ref, raw_exon_coordinates_iso, i) == True:
+        mxe_t = check_for_mutually_exclusive_exons(raw_exon_coordinates_ref, raw_exon_coordinates_iso, i)
+        if mxe_t != ():
           if log: print('mutually_exclusive_exons')
+          mxe_list.append((iso_key, mxe_t))
           as_event_code = 7
           break
         # alternative acceptor: isoform exon can be either shorter (starts later) or longer (starts earlier) than reference exon
@@ -634,7 +663,60 @@ def get_exonskip_localization(transcript_id, es_list, raw_translation_coordinate
   return localization
 
 
-def detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso_txs_for_gene, ir_list, alta_list, altd_list, er_list, ci_list, unresolved_list, es_list, as_event_list, as_duplicates):
+def get_mxe_localization(transcript_id, mxe_list, raw_translation_coordinates):
+# transcript_id: transcript id of isoform to be examined
+# mxe_list_list: list of es_list events, containing tuples of transcript id + tuple of coordinates needed for localization
+# raw_translation_coordinates: Tuple containing raw start and end coordinate of translation
+# determine whether mxe happened in 5'UTR, CDS, 3'UTR
+# Returns 0 for unsuccessful localization, 1 for 5'UTR, 2 for CDS, 3 for 3'UTR
+  global log
+  localization = 0
+  raw_end_coordinate_exon_ahead_mutually_excluded_ones = 0
+  raw_start_coordinate_exon_after_mutually_excluded_ones = 0
+  raw_start_coordinate_skipped_exon = 0 # skipped in isoform
+  raw_end_coordinate_skipped_exon = 0
+
+  # get raw start and end coordinate of skipped exon:
+  # - find corresponding list entry in es_list: 
+  for entry in mxe_list:
+    if entry[0] == transcript_id:
+      #raw_start_coordinate_skipped_exon = entry[1][0]
+      #raw_end_coordinate_skipped_exon = entry[1][1]
+      raw_end_coordinate_exon_ahead_mutually_excluded_ones = entry[1][2]
+      raw_start_coordinate_exon_after_mutually_excluded_ones = entry[1][3]
+      break
+  
+  # comparisons
+  if raw_translation_coordinates[1] <= raw_end_coordinate_exon_ahead_mutually_excluded_ones:
+    # event in 3'UTR
+    if log: print(f"* Mutually excluded exon in transcript isoform {transcript_id} happened in 3UTR")
+    localization = 3
+    return localization
+  if raw_translation_coordinates[0] >= raw_start_coordinate_exon_after_mutually_excluded_ones:
+    # event in 5'UTR
+    if log: print(f"* Mutually excluded exon in transcript isoform {transcript_id} happened in 5UTR")
+    localization = 1
+    return localization
+  if raw_translation_coordinates[0] <= raw_end_coordinate_exon_ahead_mutually_excluded_ones and raw_translation_coordinates[1] >= raw_start_coordinate_exon_after_mutually_excluded_ones:
+    # event in CDS
+    if log: print(f"* Mutually excluded exon in transcript isoform {transcript_id} happened in CDS")
+    localization = 2
+    return localization
+  if raw_translation_coordinates[0] > raw_end_coordinate_exon_ahead_mutually_excluded_ones and raw_translation_coordinates[0] < raw_start_coordinate_exon_after_mutually_excluded_ones and raw_translation_coordinates[1] >= raw_start_coordinate_exon_after_mutually_excluded_ones:
+    # event in 5'UTR + CDS
+    if log: print(f"* Mutually excluded exon in transcript isoform {transcript_id} happened in 5UTR and CDS")
+    localization = 4
+    return localization
+  if raw_translation_coordinates[0] <= raw_end_coordinate_exon_ahead_mutually_excluded_ones and raw_end_coordinate_exon_ahead_mutually_excluded_ones < raw_translation_coordinates[1] and raw_translation_coordinates[1] < raw_start_coordinate_exon_after_mutually_excluded_ones:
+    # event in CDS + 3'UTR
+    if log: print(f"* Mutually excluded exon in transcript isoform {transcript_id} happened in CDS and 3UTR")
+    localization = 5
+    return localization
+
+  return localization
+
+
+def detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso_txs_for_gene, ir_list, alta_list, altd_list, er_list, ci_list, es_list, mxe_list, unresolved_list, as_event_list, as_duplicates):
 # ref_tx_for_gene: tuple containing ID of reference transcript for certain gene and associated list of lists of exon and intron lengths as value
 # transcriptModels: dictionary containing transcript IDs as keys and lists of lists of exon and intron lengths as values
 # orf_data: dictionary containing transcript IDs as keys and tuples of ORF boundaries as values
@@ -642,10 +724,11 @@ def detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso
 # ir_list: list of IR events, containing tuples of transcript_id + number of retained intron - to be filled by subroutine detect_as_event()
 # alta_list: list of AltA events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
 # altd_list: list of AltD events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
-# er_list: list of ER (exon retention) events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
-# ci_list: list of cryptic intron events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
-# unresolved_list: list of unresolved AS events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
+# er_list: list of ER events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
+# ci_list: list of CI events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
 # es_list: list of ES events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
+# mxe_list: list of MXE events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
+# unresolved_list: list of unresolved AS events, containing tuples of transcript_id + number of affected exon - to be filled by subroutine detect_as_event()
 # as_event_list: serves to detect duplicate AS events - to be filled here
 # as_duplicates: serves counting the different AS event duplicates - to be filled here
 # returns False, if for reference transcript the determination of the exons that define the translation was not successful (means: concerned 
@@ -655,7 +738,7 @@ def detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso
   if log: print(f"detect_and_locate_as_events()")
   if ref_tx_for_gene != ():
     intronless_translation_boundary_exons = get_intronless_translation_boundary_exons(ref_tx_for_gene[0], transcriptModels, orf_data)
-    if log: print(f"intronless_translation_boundary_exons = {intronless_translation_boundary_exons}")
+    #print(f"intronless_translation_boundary_exons = {intronless_translation_boundary_exons}")
     if intronless_translation_boundary_exons[1] == -1 or intronless_translation_boundary_exons[2] == -1:
       # one or both boundary exons could not be determined
       if log: print(intronless_translation_boundary_exons[0], ': lacking exon data: no AS event investigation')
@@ -762,9 +845,20 @@ def detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso
               es_events['not localized'] += 1
 
           if as_event[1] == 7:
-            # mux event
-            mux_events['not localized'] += 1
-
+            # mxe event
+            localization = get_mxe_localization(key1, mxe_list, raw_translation_coordinates)
+            if localization == 1:
+              mxe_events['5UTR'] += 1
+            if localization == 2:
+              mxe_events['CDS'] += 1
+            if localization == 3:
+              mxe_events['3UTR'] += 1
+            if localization == 4:
+              mxe_events['5UTR+CDS'] += 1
+            if localization == 5:
+              mxe_events['CDS+3UTR'] += 1
+            if localization == 0:
+              mxe_events['not localized'] += 1
           as_event = (0, 0)
         else:
           # as_event in as_event_list - means: AS event already detected for the currently investigated gene
@@ -787,6 +881,9 @@ def detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso
           if as_event[1] == 6:
             # es event
             as_duplicates[5] += 1
+          if as_event[1] == 7:
+            # mxe event
+            as_duplicates[6] += 1
   checked_for_as_events = True
   return checked_for_as_events
 
@@ -810,13 +907,14 @@ alta_list = []
 altd_list = []
 er_list = []
 ci_list = []
-unresolved_list = []
 es_list = []
+mxe_list = []
+unresolved_list = []
 as_event = ()
 # examine same AS events for a gene only once; therefore the following list:
 as_event_list = []
 # count duplicates:
-as_duplicates = [0,0,0,0,0,0]
+as_duplicates = [0,0,0,0,0,0,0]
 intronless_exons = []
 intronless_translation_boundary_exons = ()
 raw_translation_coordinates = ()
@@ -826,7 +924,7 @@ altd_events = {'5UTR':0, 'CDS':0, '3UTR':0, 'not localized':0}
 er_events = {'5UTR':0, 'CDS':0, '3UTR':0, 'not localized':0}
 ci_events = {'5UTR':0, 'CDS':0, '3UTR':0, '5UTR+CDS':0, 'CDS+3UTR':0, '5UTR+CDS+3UTR':0, 'not localized':0}
 es_events = {'5UTR':0, 'CDS':0, '3UTR':0, '5UTR+CDS':0, 'CDS+3UTR':0, '5UTR+CDS+3UTR':0, 'not localized':0}
-mux_events = {'not localized':0}
+mxe_events = {'5UTR':0, 'CDS':0, '3UTR':0, '5UTR+CDS':0, 'CDS+3UTR':0,'not localized':0}
 gene_name = ''
 ref_tx_for_gene = ()
 iso_txs_for_gene = {}
@@ -838,7 +936,7 @@ for key, value in transcriptModels.items():
   if gene_name != key[0:9] and gene_name != '':
     # new gene, but not first one
     # AS event analysis for previous gene:
-    if detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso_txs_for_gene, ir_list, alta_list, altd_list, er_list, ci_list, unresolved_list, es_list, as_event_list, as_duplicates) == False:
+    if detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso_txs_for_gene, ir_list, alta_list, altd_list, er_list, ci_list, es_list, mxe_list, unresolved_list, as_event_list, as_duplicates) == False:
       not_investigated_genes += 1
     # reset data structures for the new gene
     ref_tx_for_gene = ()
@@ -863,7 +961,7 @@ for key, value in transcriptModels.items():
   if tx_counter == len(transcriptModels):
     # last transcript of last gene -> no more switch to a new gene will occur
     # therefore trigger here AS event analysis one more time
-    if detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso_txs_for_gene, ir_list, alta_list, altd_list, er_list, ci_list, unresolved_list, es_list, as_event_list, as_duplicates) == False:
+    if detect_and_locate_as_events(ref_tx_for_gene, transcriptModels, orf_data, iso_txs_for_gene, ir_list, alta_list, altd_list, er_list, ci_list, es_list, mxe_list, unresolved_list, as_event_list, as_duplicates) == False:
       not_investigated_genes += 1
     examined_genes += 1
 
@@ -876,15 +974,16 @@ with open(sys.argv[3],"w") as out_writer:
   out_writer.write(f"\nER\t{er_events['5UTR']}\t{er_events['CDS']}\t{er_events['3UTR']}\t-\t-\t-\t{er_events['not localized']}\t{as_duplicates[3]}\t{len(er_list)}")
   out_writer.write(f"\nES\t{es_events['5UTR']}\t{es_events['CDS']}\t{es_events['3UTR']}\t{es_events['5UTR+CDS']}\t{es_events['CDS+3UTR']}\t{es_events['5UTR+CDS+3UTR']}\t{es_events['not localized']}\t{as_duplicates[5]}\t{len(es_list)}")
   out_writer.write(f"\nCI\t{ci_events['5UTR']}\t{ci_events['CDS']}\t{ci_events['3UTR']}\t{ci_events['5UTR+CDS']}\t{ci_events['CDS+3UTR']}\t{ci_events['5UTR+CDS+3UTR']}\t{ci_events['not localized']}\t{as_duplicates[4]}\t{len(ci_list)}")
-  out_writer.write(f"\nMUX\t-\t-\t-\t-\t-\t-\t{mux_events['not localized']}\t-\t{mux_events['not localized']}")
-  out_writer.write(f"\nSum\t{ir_events['5UTR'] + alta_events['5UTR'] + altd_events['5UTR'] + er_events['5UTR'] + ci_events['5UTR'] + es_events['5UTR']}\t")
-  out_writer.write(f"{ir_events['CDS'] + alta_events['CDS'] + altd_events['CDS'] + er_events['CDS'] + ci_events['CDS'] + es_events['CDS']}\t")
-  out_writer.write(f"{ir_events['3UTR'] + alta_events['3UTR'] + altd_events['3UTR'] + er_events['3UTR'] + ci_events['3UTR'] + es_events['3UTR']}\t")
-  out_writer.write(f"{ci_events['5UTR+CDS'] + es_events['5UTR+CDS']}\t")
-  out_writer.write(f"{ci_events['CDS+3UTR'] + es_events['CDS+3UTR']}\t")
+  out_writer.write(f"\nMXE\t{mxe_events['5UTR']}\t{mxe_events['CDS']}\t{mxe_events['3UTR']}\t{mxe_events['5UTR+CDS']}\t{mxe_events['CDS+3UTR']}\t-\t{mxe_events['not localized']}\t{as_duplicates[6]}\t{len(mxe_list)}")
+
+  out_writer.write(f"\nSum\t{ir_events['5UTR'] + alta_events['5UTR'] + altd_events['5UTR'] + er_events['5UTR'] + ci_events['5UTR'] + es_events['5UTR'] + mxe_events['5UTR']}\t")
+  out_writer.write(f"{ir_events['CDS'] + alta_events['CDS'] + altd_events['CDS'] + er_events['CDS'] + ci_events['CDS'] + es_events['CDS'] + mxe_events['CDS']}\t")
+  out_writer.write(f"{ir_events['3UTR'] + alta_events['3UTR'] + altd_events['3UTR'] + er_events['3UTR'] + ci_events['3UTR'] + es_events['3UTR'] + mxe_events['3UTR']}\t")
+  out_writer.write(f"{ci_events['5UTR+CDS'] + es_events['5UTR+CDS'] + mxe_events['5UTR+CDS']}\t")
+  out_writer.write(f"{ci_events['CDS+3UTR'] + es_events['CDS+3UTR'] + mxe_events['CDS+3UTR']}\t")
   out_writer.write(f"{ci_events['5UTR+CDS+3UTR'] + es_events['5UTR+CDS+3UTR']}\t")
-  out_writer.write(f"{ir_events['not localized'] + alta_events['not localized'] + altd_events['not localized'] + er_events['not localized'] + ci_events['not localized'] + es_events['not localized'] + mux_events['not localized']}\t")
-  out_writer.write(f"{as_duplicates[0] + as_duplicates[1] + as_duplicates[2] + as_duplicates[3] + as_duplicates[5] + as_duplicates[4]}\t")
+  out_writer.write(f"{ir_events['not localized'] + alta_events['not localized'] + altd_events['not localized'] + er_events['not localized'] + ci_events['not localized'] + es_events['not localized'] + mxe_events['not localized']}\t")
+  out_writer.write(f"{as_duplicates[0] + as_duplicates[1] + as_duplicates[2] + as_duplicates[3] + as_duplicates[5] + as_duplicates[4] + as_duplicates[6]}\t")
   out_writer.write(f"-")
 
   out_writer.write(f"\n\nTranscripts with unresolved AS events:")
